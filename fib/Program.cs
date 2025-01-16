@@ -6,38 +6,15 @@ var rootCommand = new RootCommand("A tool to bundle the contents of a few files 
 var bundleCommand = new Command("bundle", "Combines the contents of a few files into one file");
 bundleCommand.AddAlias("b");
 
-var languageOption = new Option<string[]>("--language",
-                description: "Programming languages to include (e.g., csharp, python, java). Use 'all' to include all code files.",
-                parseArgument: result =>
-                {
-                    var value = result.Tokens.Select(t => t.Value.ToLower()).ToArray();
-                    if (value.Length == 0)
-                    {
-                        result.ErrorMessage = "At least one language must be specified.";
-                    }
-                    return value;
-                })
-{
-    IsRequired = true
-};
-languageOption.AddAlias("-l");
-
+// Define options
+var languageOption = CreateLanguageOption();
 var outputOption = new Option<FileInfo>("--output", "File path and name");
 outputOption.AddAlias("-o");
-
 var noteOption = new Option<bool>("--note", "Include a comment with the source file name and relative path before each file content");
 noteOption.AddAlias("-n");
-
-var sortOption = new Option<string>("--sort",
-    description: "Sort order for files: 'name' (default) or 'type'.",
-    getDefaultValue: () => "name");
+var sortOption = new Option<string>("--sort", description: "Sort order for files: 'name' (default) or 'type'.", getDefaultValue: () => "name");
 sortOption.AddAlias("-s");
-
-var removeEmptyLinesOption = new Option<bool>(
-    aliases: new[] { "--remove-empty-lines", "-r", "--rel", "--rm-lines" },
-    description: "Removes empty lines from the source files before bundling."
-);
-
+var removeEmptyLinesOption = new Option<bool>(aliases: new[] { "--remove-empty-lines", "-r", "--rel", "--rm-lines" }, description: "Removes empty lines from the source files before bundling.");
 var authorOption = new Option<string>("--author", "Specify the author name to include in the bundle file");
 authorOption.AddAlias("-a");
 
@@ -48,80 +25,19 @@ bundleCommand.AddOption(sortOption);
 bundleCommand.AddOption(removeEmptyLinesOption);
 bundleCommand.AddOption(authorOption);
 
-
 bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string sort, bool removeEmptyLines, string author) =>
 {
     try
     {
-        // Define language-to-extension mappings
-        var languageExtensions = new Dictionary<string, string[]>
-        {
-            { "csharp", new[] { ".cs" } },
-            { "dotnet", new[] { ".cs" } },
-            { "python", new[] { ".py" } },
-            { "java", new[] { ".java" } },
-            { "javascript", new[] { ".js" } },
-            { "typescript", new[] { ".ts" } },
-            { "html", new[] { ".html", ".htm" } },
-            { "css", new[] { ".css" } },
-            { "cpp", new[] { ".cpp", ".h", ".hpp" } },
-            { "c", new[] { ".c", ".h" } },
-            { "go", new[] { ".go" } },
-            { "php", new[] { ".php" } },
-            { "ruby", new[] { ".rb" } },
-            { "kotlin", new[] { ".kt", ".kts" } },
-            { "swift", new[] { ".swift" } },
-            { "perl", new[] { ".pl", ".pm" } },
-            { "shell", new[] { ".sh" } },
-            { "batch", new[] { ".bat", ".cmd" } },
-            { "scala", new[] { ".scala" } },
-            { "r", new[] { ".r" } },
-            { "sql", new[] { ".sql" } },
-            { "react", new[] { ".jsx", ".tsx" } },
-            { "angular", new[] { ".ts", ".html", ".css", ".scss" } },
-            { "assembler", new[] { ".asm", ".s" } }
-        };
-
-        // Determine file extensions to include
-        var selectedExtensions = languages.Contains("all")
-            ? languageExtensions.Values.SelectMany(ext => ext).ToHashSet()
-            : languages.SelectMany(lang => languageExtensions.GetValueOrDefault(lang, Array.Empty<string>())).ToHashSet();
+        var selectedExtensions = GetSelectedExtensions(languages);
 
         if (!selectedExtensions.Any())
         {
             throw new Exception("No valid languages selected.");
         }
 
-        // Directories to exclude
-        // Load ignored patterns from .gitignore
-        var gitignorePath = Path.Combine(Directory.GetCurrentDirectory(), ".gitignore");
-        var ignoredPatterns = File.Exists(gitignorePath)
-            ? File.ReadAllLines(gitignorePath)
-                .Select(line => line.Trim())
-                .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#"))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase)
-            : new HashSet<string>(StringComparer.OrdinalIgnoreCase)//Declare drectories to exclude if there is no gitignore
-            {
-                "bin", "obj", "debug", "release", "node_modules", ".git",".vs"
-            };
-
-
-        // Get files in the current directory that match the extensions
-        var files = Directory.GetFiles(Directory.GetCurrentDirectory(), "*", SearchOption.AllDirectories)
-        .Where(file =>
-        {
-            // Exclude files in ignored directories
-            var directory = Path.GetDirectoryName(file);
-            if (directory != null && ignoredPatterns.Any(dir => directory.Contains(dir, StringComparison.OrdinalIgnoreCase)))
-            {
-                return false;
-            }
-
-            // Include files with matching extensions
-            return selectedExtensions.Contains(Path.GetExtension(file).ToLower());
-        })
-        .ToList();
-
+        var ignoredPatterns = LoadIgnoredPatterns();
+        var files = GetMatchingFiles(selectedExtensions, ignoredPatterns);
 
         if (!files.Any())
         {
@@ -129,47 +45,8 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
             return;
         }
 
-        // Sort files based on the sort option
-        files = sort.ToLower() switch
-        {
-            "type" => files.OrderBy(file => Path.GetExtension(file).ToLower()).ThenBy(file => Path.GetFileName(file)).ToList(),
-            _ => files.OrderBy(file => Path.GetFileName(file)).ToList(),
-        };
-
-        // Write to the output file
-        using var writer = new StreamWriter(output.FullName);
-        {
-            // Write author comment if provided
-            if (!string.IsNullOrEmpty(author))
-            {
-                writer.WriteLine($"# Author: {author}");
-            }
-
-            foreach (var file in files)
-            {
-                if (note)
-                {
-                    // Write a comment with the file's source
-                    writer.WriteLine($"# Source: {Path.GetRelativePath(Directory.GetCurrentDirectory(), file)}");
-                }
-
-                // Read file content
-                var content = File.ReadAllLines(file);
-
-                if (removeEmptyLines)
-                {
-                    content = content.Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
-                }
-
-                // Write content to the bundle file
-                foreach (var line in content)
-                {
-                    writer.WriteLine(line);
-                }
-                writer.WriteLine(); // Add a blank line between files
-            }
-        }
-        Console.WriteLine($"Files have been successfully bundled into {output.FullName}");
+        files = SortFiles(files, sort);
+        WriteToBundleFile(output, files, note, author, removeEmptyLines);
     }
     catch (FileNotFoundException)
     {
@@ -183,14 +60,150 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
     {
         Console.WriteLine($"ERROR: An unexpected error occurred: {ex.Message}");
     }
-
 }, languageOption, outputOption, noteOption, sortOption, removeEmptyLinesOption, authorOption);
 
 var createRspCommand = new Command("create-rsp", "Creates a response file with a prepared command");
 createRspCommand.AddAlias("rsp");
+createRspCommand.SetHandler(CreateResponseFile);
 
+rootCommand.AddCommand(bundleCommand);
+rootCommand.AddCommand(createRspCommand);
 
-createRspCommand.SetHandler(() =>
+await rootCommand.InvokeAsync(args);
+
+// Function Definitions
+
+Option<string[]> CreateLanguageOption()
+{
+    var option= new Option<string[]>("--language",
+        description: "Programming languages to include (e.g., csharp, python, java). Use 'all' to include all code files.",
+        parseArgument: result =>
+        {
+            var value = result.Tokens
+                .SelectMany(t => t.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                .Select(v => v.ToLower()) 
+                .ToArray();            
+            if (value.Length == 0)
+            {
+                result.ErrorMessage = "At least one language must be specified.";
+            }
+            return value;
+        })
+    {
+        IsRequired = true
+    };
+    option.AddAlias("-l");
+    return option;
+}
+
+HashSet<string> GetSelectedExtensions(string[] languages)
+{
+    var languageExtensions = new Dictionary<string, string[]>
+    {
+        { "csharp", new[] { ".cs" } },
+        { "dotnet", new[] { ".cs" } },
+        { "python", new[] { ".py" } },
+        { "java", new[] { ".java" } },
+        { "javascript", new[] { ".js" } },
+        { "typescript", new[] { ".ts" } },
+        { "html", new[] { ".html", ".htm" } },
+        { "css", new[] { ".css" } },
+        { "cpp", new[] { ".cpp", ".h", ".hpp" } },
+        { "c", new[] { ".c", ".h" } },
+        { "go", new[] { ".go" } },
+        { "php", new[] { ".php" } },
+        { "ruby", new[] { ".rb" } },
+        { "kotlin", new[] { ".kt", ".kts" } },
+        { "swift", new[] { ".swift" } },
+        { "perl", new[] { ".pl", ".pm" } },
+        { "shell", new[] { ".sh" } },
+        { "batch", new[] { ".bat", ".cmd" } },
+        { "scala", new[] { ".scala" } },
+        { "r", new[] { ".r" } },
+        { "sql", new[] { ".sql" } },
+        { "react", new[] { ".jsx", ".tsx" } },
+        { "angular", new[] { ".ts", ".html", ".css", ".scss" } },
+        { "assembler", new[] { ".asm", ".s" } }
+    };
+
+    var selected= languages.Contains("all")
+        ? languageExtensions.Values.SelectMany(ext => ext).ToHashSet()
+        : languages.SelectMany(lang => languageExtensions.GetValueOrDefault(lang, Array.Empty<string>())).ToHashSet();
+
+    var invalidLanguages = languages.Where(lang => !languageExtensions.ContainsKey(lang)).ToList();
+    if (invalidLanguages.Any())
+    {
+        throw new Exception($"Invalid languages specified: {string.Join(", ", invalidLanguages)}");
+    }
+    return selected;
+}
+
+HashSet<string> LoadIgnoredPatterns()
+{
+    var gitignorePath = Path.Combine(Directory.GetCurrentDirectory(), ".gitignore");
+    return File.Exists(gitignorePath)
+        ? File.ReadAllLines(gitignorePath)
+            .Select(line => line.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#"))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase)
+        : new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "bin", "obj", "debug", "release", "node_modules", ".git", ".vs" };
+}
+
+List<string> GetMatchingFiles(HashSet<string> selectedExtensions, HashSet<string> ignoredPatterns)
+{
+    return Directory.GetFiles(Directory.GetCurrentDirectory(), "*", SearchOption.AllDirectories)
+    .Where(file =>
+    {
+        var directory = Path.GetDirectoryName(file);
+        if (directory != null && ignoredPatterns.Any(dir => directory.Contains(dir, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+        return selectedExtensions.Contains(Path.GetExtension(file).ToLower());
+    })
+    .ToList();
+}
+
+List<string> SortFiles(List<string> files, string sort)
+{
+    return sort.ToLower() switch
+    {
+        "type" => files.OrderBy(file => Path.GetExtension(file).ToLower()).ThenBy(file => Path.GetFileName(file)).ToList(),
+        _ => files.OrderBy(file => Path.GetFileName(file)).ToList(),
+    };
+}
+
+void WriteToBundleFile(FileInfo output, List<string> files, bool note, string author, bool removeEmptyLines)
+{
+    using var writer = new StreamWriter(output.FullName);
+    if (!string.IsNullOrEmpty(author))
+    {
+        writer.WriteLine($"# Author: {author}");
+    }
+
+    foreach (var file in files)
+    {
+        if (note)
+        {
+            writer.WriteLine($"# Source: {Path.GetRelativePath(Directory.GetCurrentDirectory(), file)}");
+        }
+
+        var content = File.ReadAllLines(file);
+        if (removeEmptyLines)
+        {
+            content = content.Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
+        }
+
+        foreach (var line in content)
+        {
+            writer.WriteLine(line);
+        }
+        writer.WriteLine(); // Add a blank line between files
+    }
+    Console.WriteLine($"Files have been successfully bundled into {output.FullName}");
+}
+
+void CreateResponseFile()
 {
     var sb = new StringBuilder("bundle ");
 
@@ -300,10 +313,4 @@ createRspCommand.SetHandler(() =>
         Console.WriteLine($"Error creating response file: {ex.Message}");
     }
 
-});
-
-rootCommand.AddCommand(bundleCommand);
-rootCommand.AddCommand(createRspCommand);
-
-await rootCommand.InvokeAsync(args);
-
+}
