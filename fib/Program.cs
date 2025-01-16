@@ -10,7 +10,7 @@ var languageOption = new Option<string[]>("--language",
                 description: "Programming languages to include (e.g., csharp, python, java). Use 'all' to include all code files.",
                 parseArgument: result =>
                 {
-                    var value = result.Tokens.Select(t => t.Value).ToArray();
+                    var value = result.Tokens.Select(t => t.Value.ToLower()).ToArray();
                     if (value.Length == 0)
                     {
                         result.ErrorMessage = "At least one language must be specified.";
@@ -31,7 +31,7 @@ noteOption.AddAlias("-n");
 var sortOption = new Option<string>("--sort",
     description: "Sort order for files: 'name' (default) or 'type'.",
     getDefaultValue: () => "name");
-noteOption.AddAlias("-s");
+sortOption.AddAlias("-s");
 
 var removeEmptyLinesOption = new Option<bool>(
     aliases: new[] { "--remove-empty-lines", "-r", "--rel", "--rm-lines" },
@@ -53,17 +53,33 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
 {
     try
     {
-        // Map languages to file extensions
+        // Define language-to-extension mappings
         var languageExtensions = new Dictionary<string, string[]>
         {
             { "csharp", new[] { ".cs" } },
+            { "dotnet", new[] { ".cs" } },
             { "python", new[] { ".py" } },
             { "java", new[] { ".java" } },
             { "javascript", new[] { ".js" } },
             { "typescript", new[] { ".ts" } },
-            { "html", new[] { ".html" } },
+            { "html", new[] { ".html", ".htm" } },
             { "css", new[] { ".css" } },
-            { "cpp", new[] { ".cpp", ".h" } },
+            { "cpp", new[] { ".cpp", ".h", ".hpp" } },
+            { "c", new[] { ".c", ".h" } },
+            { "go", new[] { ".go" } },
+            { "php", new[] { ".php" } },
+            { "ruby", new[] { ".rb" } },
+            { "kotlin", new[] { ".kt", ".kts" } },
+            { "swift", new[] { ".swift" } },
+            { "perl", new[] { ".pl", ".pm" } },
+            { "shell", new[] { ".sh" } },
+            { "batch", new[] { ".bat", ".cmd" } },
+            { "scala", new[] { ".scala" } },
+            { "r", new[] { ".r" } },
+            { "sql", new[] { ".sql" } },
+            { "react", new[] { ".jsx", ".tsx" } },
+            { "angular", new[] { ".ts", ".html", ".css", ".scss" } },
+            { "assembler", new[] { ".asm", ".s" } }
         };
 
         // Determine file extensions to include
@@ -76,17 +92,48 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
             throw new Exception("No valid languages selected.");
         }
 
+        // Directories to exclude
+        // Load ignored patterns from .gitignore
+        var gitignorePath = Path.Combine(Directory.GetCurrentDirectory(), ".gitignore");
+        var ignoredPatterns = File.Exists(gitignorePath)
+            ? File.ReadAllLines(gitignorePath)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#"))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase)//Declare drectories to exclude if there is no gitignore
+            {
+                "bin", "obj", "debug", "release", "node_modules", ".git",".vs"
+            };
+
+
         // Get files in the current directory that match the extensions
-        var files = Directory.GetFiles(Directory.GetCurrentDirectory());
-        var filteredFiles = files
-            .Where(file => selectedExtensions.Contains(Path.GetExtension(file).ToLower()))
-            .ToList();
+        var files = Directory.GetFiles(Directory.GetCurrentDirectory(), "*", SearchOption.AllDirectories)
+        .Where(file =>
+        {
+            // Exclude files in ignored directories
+            var directory = Path.GetDirectoryName(file);
+            if (directory != null && ignoredPatterns.Any(dir => directory.Contains(dir, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            // Include files with matching extensions
+            return selectedExtensions.Contains(Path.GetExtension(file).ToLower());
+        })
+        .ToList();
+
+
+        if (!files.Any())
+        {
+            Console.WriteLine("No matching files found for the selected languages.");
+            return;
+        }
 
         // Sort files based on the sort option
-        filteredFiles = sort.ToLower() switch
+        files = sort.ToLower() switch
         {
-            "type" => filteredFiles.OrderBy(file => Path.GetExtension(file).ToLower()).ThenBy(file => Path.GetFileName(file)).ToList(),
-            _ => filteredFiles.OrderBy(file => Path.GetFileName(file)).ToList(),
+            "type" => files.OrderBy(file => Path.GetExtension(file).ToLower()).ThenBy(file => Path.GetFileName(file)).ToList(),
+            _ => files.OrderBy(file => Path.GetFileName(file)).ToList(),
         };
 
         // Write to the output file
@@ -98,7 +145,7 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
                 writer.WriteLine($"# Author: {author}");
             }
 
-            foreach (var file in filteredFiles)
+            foreach (var file in files)
             {
                 if (note)
                 {
@@ -124,13 +171,17 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
         }
         Console.WriteLine($"Files have been successfully bundled into {output.FullName}");
     }
-    catch (DirectoryNotFoundException)
+    catch (FileNotFoundException)
     {
-        Console.WriteLine("ERROR: File path is not valid");
+        Console.WriteLine("ERROR: File not found.");
+    }
+    catch (IOException ex)
+    {
+        Console.WriteLine($"ERROR: I/O error occurred: {ex.Message}");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"ERROR: {ex.Message}");
+        Console.WriteLine($"ERROR: An unexpected error occurred: {ex.Message}");
     }
 
 }, languageOption, outputOption, noteOption, sortOption, removeEmptyLinesOption, authorOption);
@@ -147,6 +198,7 @@ createRspCommand.SetHandler(() =>
 
     // Validate output file path
     string output;
+
     while (true)
     {
         Console.Write("Enter the output file path: ");
@@ -158,6 +210,7 @@ createRspCommand.SetHandler(() =>
         }
         Console.WriteLine("Output file path cannot be empty. Please try again.");
     }
+
 
     // Validate languages
     string languages;
@@ -202,51 +255,29 @@ createRspCommand.SetHandler(() =>
     }
 
     // Validate response file path
-    string responseFilePath;
+    string responseFileName;
     while (true)
     {
-        Console.Write("Enter response file path: ");
-        responseFilePath = Console.ReadLine();
-        if (!string.IsNullOrWhiteSpace(responseFilePath))
+        Console.Write("Enter response file name: ");
+        responseFileName = Console.ReadLine();
+        if (!string.IsNullOrWhiteSpace(responseFileName))
         {
-            try
+            // Add rsp extension if missing
+            if (!Path.HasExtension(responseFileName))
             {
-                // Check if the path is valid
-                string directory = Path.GetDirectoryName(responseFilePath);
-                string fileName = Path.GetFileName(responseFilePath);
-
-                if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
-                {
-                    throw new ArgumentException("The path must include a valid directory and file name.");
-                }
-
-                // Ensure the directory exists
-                if (!Directory.Exists(directory))
-                {
-                    Console.WriteLine($"The directory '{directory}' does not exist. Please provide a valid directory.");
-                    continue;
-                }
-
-                //Add rsp extention
-                if(!Path.HasExtension(responseFilePath))
-                {
-                    responseFilePath = Path.ChangeExtension(responseFilePath, ".rsp");
-                }
-
-                // validate file extension
-                if (Path.GetExtension(responseFilePath)?.ToLower() != ".rsp")
-                {
-                    Console.WriteLine("The file extention must be a '.rsp'. Please try again.");
-                    continue;
-                }
-
-                // If all checks pass, break the loop
-                break;
+                responseFileName = Path.ChangeExtension(responseFileName, ".rsp");
             }
-            catch (Exception ex)
+
+            // Validate file extension
+            if (Path.GetExtension(responseFileName)?.ToLower() != ".rsp")
             {
-                Console.WriteLine($"Invalid path: {ex.Message}");
+                Console.WriteLine("Invalid file extension. Only '.rsp' is allowed. Please try again.");
+                continue;
             }
+
+            // If all checks pass, break the loop
+            break;
+
         }
         else
         {
@@ -254,14 +285,15 @@ createRspCommand.SetHandler(() =>
         }
     }
 
+
     try
     {
-        using (var writer = new StreamWriter(responseFilePath))
+        using (var writer = new StreamWriter(responseFileName))
         {
             writer.Write(sb.ToString().Trim());
         }
 
-        Console.WriteLine($"Response file created successfully at: {responseFilePath}");
+        Console.WriteLine($"Response file created successfully at: {responseFileName}");
     }
     catch (Exception ex)
     {
